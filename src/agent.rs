@@ -681,7 +681,7 @@ impl fmt::Debug for AgentBuilder {
             .field("resolver", &self.resolver)
             // self.cookies missing because it's feature flagged.
             // self.middleware missing because we don't want to force Debug on Middleware trait.
-            .finish_non_exhaustive()
+            .finish()
     }
 }
 
@@ -692,7 +692,7 @@ impl fmt::Debug for AgentState {
             .field("resolver", &self.resolver)
             // self.cookie_tin missing because it's feature flagged.
             // self.middleware missing because we don't want to force Debug on Middleware trait.
-            .finish_non_exhaustive()
+            .finish()
     }
 }
 
