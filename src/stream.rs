@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::net::TcpStream;
 use std::time::Duration;
 use std::time::Instant;
-use std::{fmt, io::Cursor};
+use std::{fmt, io::Cursor, mem};
 
 #[cfg(feature = "socks-proxy")]
 use socks::{TargetAddr, ToTargetAddr};
@@ -37,7 +37,7 @@ pub trait TlsConnector: Send + Sync {
 }
 
 pub(crate) struct Stream {
-    inner: BufReader<Box<dyn ReadWrite>>,
+    pub(crate) inner: BufReader<Box<dyn ReadWrite>>,
     /// The remote address the stream is connected to.
     pub(crate) remote_addr: SocketAddr,
     pool_returner: PoolReturner,
@@ -70,6 +70,10 @@ impl DeadlineStream {
 
     pub(crate) fn inner_mut(&mut self) -> &mut Stream {
         &mut self.stream
+    }
+
+    pub(crate) fn into_inner(self) -> Stream {
+        self.stream
     }
 }
 
@@ -277,6 +281,14 @@ impl Stream {
         } else {
             Ok(())
         }
+    }
+
+    pub(crate) fn take_inner(&mut self) -> BufReader<Box<dyn ReadWrite>> {
+        // mem::take(&mut self.inner)
+        mem::replace(
+            &mut self.inner,
+            BufReader::new(Box::new(ReadOnlyStream::new(vec![]))),
+        )
     }
 }
 

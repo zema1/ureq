@@ -32,6 +32,7 @@ pub(crate) struct Unit {
     is_chunked: bool,
     headers: Vec<Header>,
     pub deadline: Option<time::Instant>,
+    pub hijack: bool,
 }
 
 impl Unit {
@@ -108,6 +109,7 @@ impl Unit {
             is_chunked,
             headers,
             deadline,
+            hijack: false,
         }
     }
 
