@@ -4,7 +4,15 @@ use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::{fmt, io::BufRead};
 
+#[cfg(feature = "brotli")]
+use brotli_decompressor::Decompressor as BrotliDecoder;
+#[cfg(feature = "charset")]
+use encoding_rs::Encoding;
+#[cfg(feature = "gzip")]
+use flate2::read::MultiGzDecoder;
 use log::debug;
+#[cfg(feature = "json")]
+use serde::de::DeserializeOwned;
 use url::Url;
 
 use crate::body::SizedReader;
@@ -14,19 +22,7 @@ use crate::header::{get_all_headers, get_header, Header, HeaderLine};
 use crate::pool::{PoolReturnRead, PoolReturner};
 use crate::stream::{DeadlineStream, ReadOnlyStream, Stream};
 use crate::unit::Unit;
-use crate::{stream, Agent, ErrorKind};
-
-#[cfg(feature = "json")]
-use serde::de::DeserializeOwned;
-
-#[cfg(feature = "charset")]
-use encoding_rs::Encoding;
-
-#[cfg(feature = "gzip")]
-use flate2::read::MultiGzDecoder;
-
-#[cfg(feature = "brotli")]
-use brotli_decompressor::Decompressor as BrotliDecoder;
+use crate::{stream, Agent, ErrorKind, ReadWrite};
 
 pub const DEFAULT_CONTENT_TYPE: &str = "text/plain";
 pub const DEFAULT_CHARACTER_SET: &str = "utf-8";
@@ -92,6 +88,8 @@ pub struct Response {
     ///
     /// If this response was not redirected, the history is empty.
     pub(crate) history: Vec<Url>,
+
+    pub(crate) stream: Option<Box<dyn ReadWrite>>,
 }
 
 /// index into status_line where we split: HTTP/1.1 200 OK
@@ -283,6 +281,10 @@ impl Response {
     /// ```
     pub fn into_reader(self) -> Box<dyn Read + Send + Sync + 'static> {
         self.reader
+    }
+
+    pub fn into_stream(self) -> Option<Box<dyn ReadWrite>> {
+        self.stream
     }
 
     // Determine what to do with the connection after we've read the body.
@@ -608,8 +610,17 @@ impl Response {
             headers.retain(|h| !h.is_name("content-encoding") && !h.is_name("content-length"));
         }
 
-        let reader =
-            Self::stream_to_reader(stream, &unit, body_type, compression, connection_option);
+        let (reader, inner_stream) = if unit.hijack {
+            // let reader = Box::new(stream);
+            // (reader, None)
+            let reader: Box<dyn Read + Send + Sync> = Box::new(io::empty());
+            let inner_stream = stream.into_inner().take_inner().into_inner();
+            (reader, Some(inner_stream))
+        } else {
+            let reader =
+                Self::stream_to_reader(stream, &unit, body_type, compression, connection_option);
+            (reader, None)
+        };
 
         let url = unit.url.clone();
 
@@ -623,6 +634,7 @@ impl Response {
             remote_addr,
             local_addr,
             history: vec![],
+            stream: inner_stream,
         };
         Ok(response)
     }
@@ -1314,7 +1326,7 @@ mod tests {
                 "GET",
                 200,
                 "HTTP/1.1",
-                &[Header::new("Transfer-Encoding", "chunked"),]
+                &[Header::new("Transfer-Encoding", "chunked"),],
             ),
             Chunked
         );
@@ -1323,7 +1335,7 @@ mod tests {
                 "GET",
                 200,
                 "HTTP/1.1",
-                &[Header::new("Content-Length", "123"),]
+                &[Header::new("Content-Length", "123"),],
             ),
             LengthDelimited(123)
         );
@@ -1335,7 +1347,7 @@ mod tests {
                 &[
                     Header::new("Content-Length", "123"),
                     Header::new("Transfer-Encoding", "chunked"),
-                ]
+                ],
             ),
             Chunked
         );
@@ -1347,7 +1359,7 @@ mod tests {
                 &[
                     Header::new("Transfer-Encoding", "chunked"),
                     Header::new("Content-Length", "123"),
-                ]
+                ],
             ),
             Chunked
         );
@@ -1359,7 +1371,7 @@ mod tests {
                 &[
                     Header::new("Transfer-Encoding", "chunked"),
                     Header::new("Content-Length", "123"),
-                ]
+                ],
             ),
             LengthDelimited(0)
         );
@@ -1368,7 +1380,7 @@ mod tests {
                 "GET",
                 200,
                 "HTTP/1.0",
-                &[Header::new("Transfer-Encoding", "chunked"),]
+                &[Header::new("Transfer-Encoding", "chunked"),],
             ),
             CloseDelimited,
             "HTTP/1.0 did not support chunked encoding"
@@ -1378,7 +1390,7 @@ mod tests {
                 "GET",
                 200,
                 "HTTP/1.0",
-                &[Header::new("Content-Length", "123"),]
+                &[Header::new("Content-Length", "123"),],
             ),
             LengthDelimited(123)
         );

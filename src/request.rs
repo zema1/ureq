@@ -32,6 +32,7 @@ pub struct Request {
     url: String,
     pub(crate) headers: Vec<Header>,
     timeout: Option<time::Duration>,
+    hijack: bool,
 }
 
 impl fmt::Debug for Request {
@@ -52,7 +53,14 @@ impl Request {
             url,
             headers: vec![],
             timeout: None,
+            hijack: false,
         }
+    }
+
+    #[inline(always)]
+    pub fn hijack(mut self) -> Self {
+        self.hijack = true;
+        self
     }
 
     #[inline(always)]
@@ -138,7 +146,7 @@ impl Request {
         let request_fn = |req: Request| {
             let reader = payload.into_read();
             let url = req.parse_url()?;
-            let unit = Unit::new(
+            let mut unit = Unit::new(
                 &req.agent,
                 &req.method,
                 &url,
@@ -146,6 +154,7 @@ impl Request {
                 &reader,
                 deadline,
             );
+            unit.hijack = req.hijack;
 
             unit::connect(unit, true, reader).map_err(|e| e.url(url))
         };
