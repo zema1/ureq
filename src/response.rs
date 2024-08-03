@@ -181,6 +181,18 @@ impl Response {
             .collect()
     }
 
+    /// A list of the header names in this response.
+    ///
+    /// It's possible for a header name to be returned by this function, and
+    /// still give a `None` value. See [`Response::header()`] for an explanation
+    /// as to why.
+    pub fn headers_keys(&self) -> Vec<String> {
+        self.headers
+            .iter()
+            .map(|h| h.name().to_string())
+            .collect()
+    }
+
     /// Tells if the response has the named header.
     pub fn has(&self, name: &str) -> bool {
         self.header(name).is_some()
