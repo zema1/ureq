@@ -193,13 +193,15 @@ impl std::error::Error for Error {}
 impl Error {
     /// Convert the error into a [`std::io::Error`].
     ///
-    /// If the error is [`Error::Io`], we unpack the error. In othe cases we make
+    /// If the error is [`Error::Io`], we unpack the error.
+    /// If the error is [`Error::Timeout`], we make an `std::io::ErrorKind::TimedOut`.
+    /// In other cases we make
     /// an `std::io::ErrorKind::Other`.
     pub fn into_io(self) -> io::Error {
-        if let Self::Io(e) = self {
-            e
-        } else {
-            io::Error::new(io::ErrorKind::Other, self)
+        match self {
+            Self::Io(e) => e,
+            Self::Timeout(_) => io::Error::new(io::ErrorKind::TimedOut, self),
+            _ => io::Error::new(io::ErrorKind::Other, self),
         }
     }
 

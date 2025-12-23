@@ -17,7 +17,7 @@ use crate::request::ForceSendBody;
 use crate::response::{RedirectHistory, ResponseUri};
 use crate::timings::{CallTimings, CurrentTime};
 use crate::transport::time::{Duration, Instant};
-use crate::transport::ConnectionDetails;
+use crate::transport::{ConnectionDetails, Transport};
 use crate::util::{DebugRequest, DebugResponse, DebugUri, HeaderMapExt, UriExt};
 use crate::{Agent, Body, Error, SendBody, Timeout};
 
@@ -238,8 +238,20 @@ fn call_run(
             }
         }
         RecvResponseResult::Cleanup(call) => {
-            cleanup(connection, call.must_close_connection(), timings.now());
-            CallResult::Response(response, BodyHandler::default())
+            // For 101 Switching Protocols, preserve the connection for hijacking
+            if response.status() == http::StatusCode::SWITCHING_PROTOCOLS {
+                let timings = mem::take(timings);
+                let handler = BodyHandler {
+                    call: None,
+                    connection: Some(connection),
+                    timings,
+                    ..Default::default()
+                };
+                CallResult::Response(response, handler)
+            } else {
+                cleanup(connection, call.must_close_connection(), timings.now());
+                CallResult::Response(response, BodyHandler::default())
+            }
         }
     };
 
@@ -752,6 +764,14 @@ impl BodyHandler {
         // such a body was signalled by the remote.
         let redirect = self.redirect.take().map(|b| *b);
         Ok(redirect.expect("remote to have signaled redirect"))
+    }
+
+    /// Take the underlying transport for protocol upgrades (e.g., WebSocket).
+    ///
+    /// This consumes the connection and returns the raw transport.
+    /// After calling this, the body can no longer be read.
+    pub(crate) fn take_transport(&mut self) -> Option<Box<dyn Transport>> {
+        self.connection.take().map(|c| c.into_transport())
     }
 }
 

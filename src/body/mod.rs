@@ -8,6 +8,7 @@ use ureq_proto::BodyMode;
 
 use crate::http;
 use crate::run::BodyHandler;
+use crate::transport::{Transport, TransportAdapter};
 use crate::Error;
 
 use self::limit::LimitReader;
@@ -430,6 +431,71 @@ impl Body {
     pub fn into_with_config(self) -> BodyWithConfig<'static> {
         let handler = self.source.into();
         BodyWithConfig::new(handler, self.info)
+    }
+
+    /// Extract the underlying transport for protocol upgrades (e.g., WebSocket).
+    ///
+    /// This is useful when you need direct access to the connection after an HTTP
+    /// upgrade handshake (101 Switching Protocols). After calling this method,
+    /// the body can no longer be read.
+    ///
+    /// Returns `None` if the body was not created from a network response
+    /// (e.g., if it was built using [`Body::builder()`]).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use ureq::unversioned::transport::Transport;
+    ///
+    /// let response = ureq::get("ws://echo.websocket.org")
+    ///     .header("Connection", "Upgrade")
+    ///     .header("Upgrade", "websocket")
+    ///     .call()?;
+    ///
+    /// // Get the underlying transport for WebSocket communication
+    /// let transport = response.into_body().into_transport();
+    /// ```
+    ///
+    /// **NOTE**: The [`Transport`] trait is part of the `unversioned` module
+    /// and does not follow semver guarantees.
+    pub fn into_transport(self) -> Option<Box<dyn Transport>> {
+        match self.source {
+            BodyDataSource::Handler(mut handler) => handler.take_transport(),
+            BodyDataSource::Reader(_) => None,
+        }
+    }
+
+    /// Extract the underlying transport wrapped in a [`TransportAdapter`].
+    ///
+    /// This is a convenience method that wraps the transport in an adapter
+    /// implementing [`std::io::Read`] and [`std::io::Write`], making it easier
+    /// to use with standard I/O operations.
+    ///
+    /// Returns `None` if the body was not created from a network response.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use std::io::{Read, Write};
+    ///
+    /// let response = ureq::get("ws://echo.websocket.org")
+    ///     .header("Connection", "Upgrade")
+    ///     .header("Upgrade", "websocket")
+    ///     .call()?;
+    ///
+    /// // Get an adapter that implements Read + Write
+    /// let mut adapter = response.into_body()
+    ///     .into_transport_adapter()
+    ///     .expect("should have transport");
+    ///
+    /// // Now you can use standard I/O operations
+    /// adapter.write_all(b"Hello")?;
+    /// ```
+    ///
+    /// **NOTE**: The [`TransportAdapter`] is part of the `unversioned` module
+    /// and does not follow semver guarantees.
+    pub fn into_transport_adapter(self) -> Option<TransportAdapter<Box<dyn Transport>>> {
+        self.into_transport().map(TransportAdapter::new)
     }
 }
 
