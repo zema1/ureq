@@ -166,6 +166,11 @@ impl Connection {
         self.transport.is_tls()
     }
 
+    /// Consume this connection and return its transport for a protocol upgrade.
+    pub fn into_transport(self) -> Box<dyn Transport> {
+        self.transport
+    }
+
     fn age(&self, now: Instant) -> Duration {
         now.duration_since(self.last_use)
     }

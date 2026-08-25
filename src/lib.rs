@@ -1382,6 +1382,35 @@ pub(crate) mod test {
         assert_eq!(body, "OK");
     }
 
+    #[test]
+    #[cfg(feature = "_test")]
+    fn protocol_upgrade_exposes_bidirectional_transport() {
+        use std::io::{Read, Write};
+
+        init_test_log();
+
+        let agent = Agent::config_builder().proxy(None).build().new_agent();
+        let response = agent
+            .get("http://my-fine-server/protocol-upgrade")
+            .header("Connection", "Upgrade")
+            .header("Upgrade", "websocket")
+            .call()
+            .unwrap();
+
+        assert_eq!(response.status(), http::StatusCode::SWITCHING_PROTOCOLS);
+        assert_eq!(response.headers().get("upgrade").unwrap(), "websocket");
+
+        let (_, body) = response.into_parts();
+        let mut transport = body
+            .into_transport_adapter()
+            .expect("101 response must retain its transport");
+
+        let mut upgraded_data = [0_u8; 13];
+        transport.read_exact(&mut upgraded_data).unwrap();
+        assert_eq!(&upgraded_data, b"UPGRADED_DATA");
+        transport.write_all(b"CLIENT_DATA").unwrap();
+    }
+
     // This doesn't need to run, just compile.
     fn _ensure_send_sync() {
         fn is_send(_t: impl Send) {}

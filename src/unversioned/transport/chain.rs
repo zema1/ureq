@@ -1,5 +1,7 @@
 use std::fmt;
+use std::io;
 use std::marker::PhantomData;
+use std::net::TcpStream;
 
 use super::{Connector, Transport};
 
@@ -103,6 +105,13 @@ impl<A: Transport, B: Transport> Transport for Either<A, B> {
         match self {
             Either::A(a) => a.is_tls(),
             Either::B(b) => b.is_tls(),
+        }
+    }
+
+    fn try_clone_tcp_stream(&self) -> io::Result<Option<TcpStream>> {
+        match self {
+            Either::A(a) => a.try_clone_tcp_stream(),
+            Either::B(b) => b.try_clone_tcp_stream(),
         }
     }
 }

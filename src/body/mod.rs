@@ -9,6 +9,7 @@ use ureq_proto::http::header;
 use crate::Error;
 use crate::http;
 use crate::run::BodyHandler;
+use crate::transport::{Transport, TransportAdapter};
 
 use self::limit::LimitReader;
 use self::lossy::LossyUtf8Reader;
@@ -451,6 +452,31 @@ impl Body {
     pub fn into_with_config(self) -> BodyWithConfig<'static> {
         let handler = self.source.into();
         BodyWithConfig::new(handler, self.info)
+    }
+
+    /// Extract the underlying transport after a protocol upgrade.
+    ///
+    /// This is primarily intended for `101 Switching Protocols` responses, such as
+    /// WebSocket handshakes. It returns `None` when this body does not own a network
+    /// connection. After extraction, normal HTTP body reading is no longer possible.
+    ///
+    /// This API uses the unversioned [`Transport`] trait and does not carry semver
+    /// compatibility guarantees.
+    pub fn into_transport(self) -> Option<Box<dyn Transport>> {
+        match self.source {
+            BodyDataSource::Handler(mut handler) => handler.take_transport(),
+            BodyDataSource::Reader(_) => None,
+        }
+    }
+
+    /// Extract the upgraded connection as an [`io::Read`](std::io::Read) and
+    /// [`io::Write`](std::io::Write) adapter.
+    ///
+    /// This is a convenience wrapper around [`Body::into_transport`]. The returned
+    /// adapter also allows callers to clone the underlying TCP stream for readiness
+    /// waiting without sharing TLS reads or writes between threads.
+    pub fn into_transport_adapter(self) -> Option<TransportAdapter<Box<dyn Transport>>> {
+        self.into_transport().map(TransportAdapter::new)
     }
 }
 

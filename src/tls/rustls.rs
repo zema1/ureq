@@ -275,6 +275,10 @@ impl Transport for RustlsTransport {
     fn is_tls(&self) -> bool {
         true
     }
+
+    fn try_clone_tcp_stream(&self) -> std::io::Result<Option<std::net::TcpStream>> {
+        self.stream.get_ref().get_ref().try_clone_tcp_stream()
+    }
 }
 
 #[derive(Debug)]

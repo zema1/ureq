@@ -22,6 +22,8 @@
 //! connector handling other schemes than `http`/`https` without affecting "regular" connections.
 
 use std::fmt::Debug;
+use std::io::Result as IoResult;
+use std::net::TcpStream;
 use std::sync::Arc;
 
 use http::Uri;
@@ -312,6 +314,19 @@ pub trait Transport: Debug + Send + Sync + 'static {
         false
     }
 
+    /// Clone the underlying TCP stream for readiness waiting.
+    ///
+    /// The clone must only be used with an OS readiness API. Reading from, writing
+    /// to, shutting down, or changing socket options through the clone can corrupt
+    /// the HTTP/TLS transport state. Built-in TCP, proxy and TLS transports forward
+    /// this to the socket at the bottom of the connector chain.
+    ///
+    /// Custom transports that are not backed by a TCP stream can keep the default
+    /// `None` result.
+    fn try_clone_tcp_stream(&self) -> IoResult<Option<TcpStream>> {
+        Ok(None)
+    }
+
     /// Turn this transport in a boxed version.
     // TODO(martin): is is complicating the public API?
     #[doc(hidden)]
@@ -516,5 +531,9 @@ where
 
     fn is_tls(&self) -> bool {
         (**self).is_tls()
+    }
+
+    fn try_clone_tcp_stream(&self) -> IoResult<Option<TcpStream>> {
+        (**self).try_clone_tcp_stream()
     }
 }

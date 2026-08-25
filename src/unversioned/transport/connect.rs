@@ -181,6 +181,10 @@ impl Transport for TunnelTransport {
     fn is_tls(&self) -> bool {
         false
     }
+
+    fn try_clone_tcp_stream(&self) -> std::io::Result<Option<std::net::TcpStream>> {
+        self.0.try_clone_tcp_stream()
+    }
 }
 
 impl fmt::Debug for ConnectProxyConnector {

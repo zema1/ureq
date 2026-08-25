@@ -237,6 +237,10 @@ impl Transport for TcpTransport {
     fn is_open(&mut self) -> bool {
         probe_tcp_stream(&mut self.stream).unwrap_or(false)
     }
+
+    fn try_clone_tcp_stream(&self) -> io::Result<Option<TcpStream>> {
+        self.stream.try_clone().map(Some)
+    }
 }
 
 fn probe_tcp_stream(stream: &mut TcpStream) -> Result<bool, Error> {
@@ -275,5 +279,30 @@ impl fmt::Debug for TcpTransport {
         f.debug_struct("TcpTransport")
             .field("addr", &self.stream.peer_addr().ok())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{TcpListener, TcpStream};
+
+    use super::{LazyBuffers, TcpTransport, Transport};
+
+    #[test]
+    fn readiness_stream_is_a_clone_of_the_transport_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_server, _) = listener.accept().unwrap();
+        let transport = TcpTransport::new(client, LazyBuffers::new(1024, 1024));
+
+        let readiness = transport
+            .try_clone_tcp_stream()
+            .unwrap()
+            .expect("TCP transport has a readiness socket");
+
+        assert_eq!(
+            readiness.peer_addr().unwrap(),
+            transport.stream.peer_addr().unwrap()
+        );
     }
 }

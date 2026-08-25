@@ -610,6 +610,31 @@ fn setup_default_handlers(handlers: &mut Vec<TestHandler>) {
     );
 
     maybe_add(
+        TestHandler::new("/protocol-upgrade", |_uri, req, w| {
+            assert_eq!(
+                req.headers()
+                    .get("connection")
+                    .and_then(|v| v.to_str().ok()),
+                Some("Upgrade")
+            );
+            assert_eq!(
+                req.headers().get("upgrade").and_then(|v| v.to_str().ok()),
+                Some("websocket")
+            );
+
+            write!(
+                w,
+                "HTTP/1.1 101 Switching Protocols\r\n\
+                 Connection: Upgrade\r\n\
+                 Upgrade: websocket\r\n\
+                 \r\n\
+                 UPGRADED_DATA"
+            )
+        }),
+        handlers,
+    );
+
+    maybe_add(
         TestHandler::new("/1chunk-abort", |_uri, _req, w| {
             write!(
                 w,

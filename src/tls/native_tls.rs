@@ -299,6 +299,16 @@ impl Transport for NativeTlsTransport {
     fn is_tls(&self) -> bool {
         true
     }
+
+    fn try_clone_tcp_stream(&self) -> io::Result<Option<std::net::TcpStream>> {
+        match &self.stream {
+            LazyStream::Unstarted(Some((_, _, adapter))) => {
+                adapter.stream.get_ref().try_clone_tcp_stream()
+            }
+            LazyStream::Started(stream) => stream.get_ref().stream.get_ref().try_clone_tcp_stream(),
+            LazyStream::Unstarted(None) => Ok(None),
+        }
+    }
 }
 
 impl fmt::Debug for NativeTlsConnector {

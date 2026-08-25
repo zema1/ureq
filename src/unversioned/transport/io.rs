@@ -1,4 +1,5 @@
 use std::io;
+use std::net::TcpStream;
 
 use crate::Timeout;
 
@@ -50,6 +51,15 @@ impl<T: Transport> TransportAdapter<T> {
     /// Turn the adapter back into the wrapped transport
     pub fn into_inner(self) -> T {
         self.transport
+    }
+
+    /// Clone the bottom TCP stream for use with an OS readiness waiter.
+    ///
+    /// The returned stream must not be used for I/O or socket configuration. All
+    /// actual reads and writes must continue through this adapter so TLS state stays
+    /// owned by one thread.
+    pub fn try_clone_tcp_stream(&self) -> io::Result<Option<TcpStream>> {
+        self.transport.try_clone_tcp_stream()
     }
 }
 
