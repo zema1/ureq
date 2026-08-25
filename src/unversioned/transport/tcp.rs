@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::sync::Arc;
 use std::{fmt, io, time};
 
@@ -14,9 +14,20 @@ use super::chain::Either;
 use super::time::Duration;
 use super::{Buffers, ConnectionDetails, Connector, LazyBuffers, NextTimeout, Transport};
 
-#[derive(Default)]
 /// Connector for regular TCP sockets.
-pub struct TcpConnector(());
+#[derive(Default)]
+pub struct TcpConnector {
+    local_ip: Option<IpAddr>,
+}
+
+impl TcpConnector {
+    /// Bind outgoing TCP sockets to this local IP before connecting.
+    pub fn with_local_ip(local_ip: IpAddr) -> Self {
+        Self {
+            local_ip: Some(local_ip),
+        }
+    }
+}
 
 impl<In: Transport> Connector<In> for TcpConnector {
     type Out = Either<In, TcpTransport>;
@@ -40,6 +51,7 @@ impl<In: Transport> Connector<In> for TcpConnector {
             details.timeout,
             details.current_time.clone(),
             config,
+            self.local_ip,
         )?;
 
         let buffers = LazyBuffers::new(config.input_buffer_size(), config.output_buffer_size());
@@ -55,6 +67,7 @@ fn try_connect(
     timeout: NextTimeout,
     current_time: Arc<dyn Fn() -> Instant + Send + Sync + 'static>,
     config: &Config,
+    local_ip: Option<IpAddr>,
 ) -> Result<TcpStream, Error> {
     // The idea here is to give each attempt a budget of the total time to try.
     // For a host returning multiple addresses, we share the budget between them
@@ -92,7 +105,7 @@ fn try_connect(
             timeout.max(MIN_PER_ADDRESS_TIMEOUT)
         });
 
-        match try_connect_single(*addr, per_addr, config) {
+        match try_connect_single(*addr, per_addr, config, local_ip) {
             // First that connects
             Ok(v) => return Ok(v),
             // Intercept ConnectionRefused to try next addrs
@@ -128,15 +141,11 @@ fn try_connect_single(
     addr: SocketAddr,
     per_addr: Option<Duration>,
     config: &Config,
+    local_ip: Option<IpAddr>,
 ) -> Result<TcpStream, Error> {
     trace!("Try connect TcpStream to {}", addr);
 
-    let maybe_stream = if let Some(when) = per_addr {
-        TcpStream::connect_timeout(&addr, *when)
-    } else {
-        TcpStream::connect(addr)
-    }
-    .normalize_would_block();
+    let maybe_stream = connect_socket(addr, per_addr, local_ip).normalize_would_block();
 
     let stream = match maybe_stream {
         Ok(v) => v,
@@ -154,6 +163,39 @@ fn try_connect_single(
     debug!("Connected TcpStream to {}", addr);
 
     Ok(stream)
+}
+
+fn connect_socket(
+    addr: SocketAddr,
+    timeout: Option<Duration>,
+    local_ip: Option<IpAddr>,
+) -> io::Result<TcpStream> {
+    let Some(local_ip) = local_ip else {
+        return if let Some(timeout) = timeout {
+            TcpStream::connect_timeout(&addr, *timeout)
+        } else {
+            TcpStream::connect(addr)
+        };
+    };
+    if local_ip.is_ipv4() != addr.is_ipv4() {
+        return Err(io::Error::new(
+            io::ErrorKind::AddrNotAvailable,
+            "local bind IP family does not match remote address",
+        ));
+    }
+    let domain = if addr.is_ipv4() {
+        socket2::Domain::IPV4
+    } else {
+        socket2::Domain::IPV6
+    };
+    let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
+    socket.bind(&SocketAddr::new(local_ip, 0).into())?;
+    if let Some(timeout) = timeout {
+        socket.connect_timeout(&addr.into(), *timeout)?;
+    } else {
+        socket.connect(&addr.into())?;
+    }
+    Ok(socket.into())
 }
 
 pub struct TcpTransport {
@@ -286,7 +328,7 @@ impl fmt::Debug for TcpTransport {
 mod tests {
     use std::net::{TcpListener, TcpStream};
 
-    use super::{LazyBuffers, TcpTransport, Transport};
+    use super::{LazyBuffers, TcpTransport, Transport, connect_socket};
 
     #[test]
     fn readiness_stream_is_a_clone_of_the_transport_socket() {
@@ -304,5 +346,19 @@ mod tests {
             readiness.peer_addr().unwrap(),
             transport.stream.peer_addr().unwrap()
         );
+    }
+
+    #[test]
+    fn connector_can_bind_a_local_ip() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = connect_socket(
+            listener.local_addr().unwrap(),
+            Some(std::time::Duration::from_secs(1).into()),
+            Some("127.0.0.1".parse().unwrap()),
+        )
+        .unwrap();
+        let (server, peer) = listener.accept().unwrap();
+        assert_eq!(peer.ip(), "127.0.0.1".parse::<std::net::IpAddr>().unwrap());
+        drop((client, server));
     }
 }

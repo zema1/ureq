@@ -23,7 +23,7 @@
 
 use std::fmt::Debug;
 use std::io::Result as IoResult;
-use std::net::TcpStream;
+use std::net::{IpAddr, TcpStream};
 use std::sync::Arc;
 
 use http::Uri;
@@ -362,58 +362,47 @@ impl DefaultConnector {
     pub fn new() -> Self {
         Self::default()
     }
-}
 
-impl Default for DefaultConnector {
-    fn default() -> Self {
+    /// Creates the default connector while binding direct and HTTP-proxy TCP
+    /// sockets to a specific local IP address.
+    pub fn with_local_ip(local_ip: IpAddr) -> Self {
+        Self::build(Some(local_ip))
+    }
+
+    fn build(local_ip: Option<IpAddr>) -> Self {
         let inner = ();
-
-        // When enabled, all tests are connected to a dummy server and will not
-        // make requests to the internet.
         #[cfg(feature = "_test")]
         let inner = inner.chain(test::TestConnector);
-
-        // If we are using socks-proxy, that takes precedence over TcpConnector.
         #[cfg(feature = "socks-proxy")]
         let inner = inner.chain(SocksConnector::default());
-
-        // If the config indicates we ought to use a socks proxy
-        // and the feature flag isn't enabled, we should warn the user.
         #[cfg(not(feature = "socks-proxy"))]
         let inner = inner.chain(no_proxy::WarnOnNoSocksConnector);
-
-        // If this is a CONNECT proxy, we must "prepare" the socket
-        // by setting up another connection and sending the `CONNECT host:port` line.
         let inner = inner.chain(ConnectProxyConnector::default());
-
-        // If we didn't get a socks-proxy, open a Tcp connection
-        let inner = inner.chain(TcpConnector::default());
-
-        // If rustls is enabled, prefer that
+        let tcp = local_ip
+            .map(TcpConnector::with_local_ip)
+            .unwrap_or_default();
+        let inner = inner.chain(tcp);
         #[cfg(feature = "_rustls")]
         let inner = inner.chain(RustlsConnector::default());
-
-        // Panic if the config calls for rustls, the uri scheme is https and that
-        // TLS provider is not enabled by feature flags.
         #[cfg(feature = "_tls")]
         let inner = inner.chain(no_tls::WarnOnMissingTlsProvider(
             crate::tls::TlsProvider::Rustls,
         ));
-
-        // As a fallback if rustls isn't enabled, use native-tls
         #[cfg(feature = "native-tls")]
         let inner = inner.chain(NativeTlsConnector::default());
-
-        // Panic if the config calls for native-tls, the uri scheme is https and that
-        // TLS provider is not enabled by feature flags.
         #[cfg(feature = "_tls")]
         let inner = inner.chain(no_tls::WarnOnMissingTlsProvider(
             crate::tls::TlsProvider::NativeTls,
         ));
-
         DefaultConnector {
             inner: boxed_connector(inner),
         }
+    }
+}
+
+impl Default for DefaultConnector {
+    fn default() -> Self {
+        Self::build(None)
     }
 }
 

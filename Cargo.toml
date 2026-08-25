@@ -72,6 +72,7 @@ ureq-proto = { version = "0.6.2", default-features = false, features = ["client"
 log = "0.4.25"
 utf8-zero = "0.8.1"
 percent-encoding = "2.3.1"
+socket2 = "0.6"
 
 # These are used regardless of TLS implementation.
 rustls-pki-types = { version = "1.11.0", optional = true, default-features = false, features = ["std"] }
