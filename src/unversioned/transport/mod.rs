@@ -363,8 +363,8 @@ impl DefaultConnector {
         Self::default()
     }
 
-    /// Creates the default connector while binding direct and HTTP-proxy TCP
-    /// sockets to a specific local IP address.
+    /// Creates the default connector while binding direct, HTTP-proxy, and
+    /// SOCKS-proxy TCP sockets to a specific local IP address.
     pub fn with_local_ip(local_ip: IpAddr) -> Self {
         Self::build(Some(local_ip))
     }
@@ -374,7 +374,11 @@ impl DefaultConnector {
         #[cfg(feature = "_test")]
         let inner = inner.chain(test::TestConnector);
         #[cfg(feature = "socks-proxy")]
-        let inner = inner.chain(SocksConnector::default());
+        let inner = inner.chain(
+            local_ip
+                .map(SocksConnector::with_local_ip)
+                .unwrap_or_default(),
+        );
         #[cfg(not(feature = "socks-proxy"))]
         let inner = inner.chain(no_proxy::WarnOnNoSocksConnector);
         let inner = inner.chain(ConnectProxyConnector::default());

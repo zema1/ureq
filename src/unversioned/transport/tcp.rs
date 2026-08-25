@@ -165,7 +165,7 @@ fn try_connect_single(
     Ok(stream)
 }
 
-fn connect_socket(
+pub(super) fn connect_socket(
     addr: SocketAddr,
     timeout: Option<Duration>,
     local_ip: Option<IpAddr>,
