@@ -113,8 +113,21 @@ fn try_connect<'a, T: ToTargetAddr + fmt::Debug + Send + 'a + Clone>(
     timeout: NextTimeout,
     local_ip: Option<IpAddr>,
 ) -> Result<TcpStream, Error> {
+    if !proxy_addrs
+        .iter()
+        .any(|addr| super::tcp::matches_local_ip_family(addr, local_ip))
+    {
+        return Err(Error::Io(io::Error::new(
+            io::ErrorKind::AddrNotAvailable,
+            "no resolved proxy address matches the local bind IP family",
+        )));
+    }
+
     for target_addr in target_addrs {
-        for proxy_addr in proxy_addrs {
+        for proxy_addr in proxy_addrs
+            .iter()
+            .filter(|addr| super::tcp::matches_local_ip_family(addr, local_ip))
+        {
             trace!(
                 "Try connect {} {} -> {:?}",
                 proxy.protocol(),
@@ -416,13 +429,10 @@ impl fmt::Debug for SocksConnector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{Ipv4Addr, TcpListener};
+    use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
 
-    #[test]
-    fn socks5_connection_can_bind_local_ip() {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let proxy_addr = listener.local_addr().unwrap();
-        let server = thread::spawn(move || {
+    fn spawn_socks5_server(listener: TcpListener) -> thread::JoinHandle<IpAddr> {
+        thread::spawn(move || {
             let (mut socket, peer) = listener.accept().unwrap();
             let mut greeting = [0u8; 3];
             socket.read_exact(&mut greeting).unwrap();
@@ -451,7 +461,14 @@ mod tests {
             }
             socket.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0]).unwrap();
             peer.ip()
-        });
+        })
+    }
+
+    #[test]
+    fn socks5_connection_can_bind_local_ip() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+        let server = spawn_socks5_server(listener);
 
         let proxy = Proxy::new(&format!("socks5://{proxy_addr}")).unwrap();
         let local_ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
@@ -463,6 +480,36 @@ mod tests {
             Some(super::super::time::Duration::from_secs(2)),
         )
         .unwrap();
+        assert_eq!(stream.local_addr().unwrap().ip(), local_ip);
+        assert_eq!(server.join().unwrap(), local_ip);
+    }
+
+    #[test]
+    fn local_ip_filters_proxy_addresses_but_not_target_addresses() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+        let server = spawn_socks5_server(listener);
+        let proxy = Proxy::new(&format!("socks5://{proxy_addr}")).unwrap();
+        let local_ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
+        let mut proxy_addrs = ResolvedSocketAddrs::from_fn(|_| proxy_addr);
+        proxy_addrs.push(SocketAddr::new(
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+            proxy_addr.port(),
+        ));
+        proxy_addrs.push(proxy_addr);
+
+        let stream = try_connect(
+            &proxy_addrs,
+            once(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 80)),
+            &proxy,
+            NextTimeout {
+                after: super::super::time::Duration::from_secs(2),
+                reason: crate::Timeout::Connect,
+            },
+            Some(local_ip),
+        )
+        .unwrap();
+
         assert_eq!(stream.local_addr().unwrap().ip(), local_ip);
         assert_eq!(server.join().unwrap(), local_ip);
     }

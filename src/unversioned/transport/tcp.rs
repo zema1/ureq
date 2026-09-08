@@ -88,7 +88,17 @@ fn try_connect(
     //
     const MIN_PER_ADDRESS_TIMEOUT: Duration = Duration::from_millis(10);
 
-    let num_addrs = addrs.len();
+    let num_addrs = addrs
+        .iter()
+        .filter(|addr| matches_local_ip_family(addr, local_ip))
+        .count();
+
+    if num_addrs == 0 {
+        return Err(Error::Io(io::Error::new(
+            io::ErrorKind::AddrNotAvailable,
+            "no resolved address matches the local bind IP family",
+        )));
+    }
 
     // Pre-calculate the total weight for the geometric series.
     // For weights [1, 1/2, 1/4, 1/8, ...], the sum is 2 * (1 - 1/2^n)
@@ -97,7 +107,10 @@ fn try_connect(
     // Start with weight 1.0 for the first address, then halve for each subsequent.
     let mut weight = 1.0_f64;
 
-    for addr in addrs {
+    for addr in addrs
+        .iter()
+        .filter(|addr| matches_local_ip_family(addr, local_ip))
+    {
         // Calculate this address's timeout using geometric series.
         let per_addr = timeout.not_zero().map(|t| {
             let secs = t.as_secs_f64() * weight / total_weight;
@@ -177,7 +190,7 @@ pub(super) fn connect_socket(
             TcpStream::connect(addr)
         };
     };
-    if local_ip.is_ipv4() != addr.is_ipv4() {
+    if !matches_local_ip_family(&addr, Some(local_ip)) {
         return Err(io::Error::new(
             io::ErrorKind::AddrNotAvailable,
             "local bind IP family does not match remote address",
@@ -196,6 +209,10 @@ pub(super) fn connect_socket(
         socket.connect(&addr.into())?;
     }
     Ok(socket.into())
+}
+
+pub(super) fn matches_local_ip_family(addr: &SocketAddr, local_ip: Option<IpAddr>) -> bool {
+    local_ip.is_none_or(|local_ip| local_ip.is_ipv4() == addr.is_ipv4())
 }
 
 pub struct TcpTransport {
@@ -326,9 +343,24 @@ impl fmt::Debug for TcpTransport {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{TcpListener, TcpStream};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
+    use std::sync::Arc;
 
-    use super::{LazyBuffers, TcpTransport, Transport, connect_socket};
+    use crate::config::Config;
+    use crate::{Error, Timeout};
+
+    use super::super::time::{Duration, Instant};
+    use super::{
+        LazyBuffers, NextTimeout, ResolvedSocketAddrs, TcpTransport, Transport, connect_socket,
+        try_connect,
+    };
+
+    fn connect_timeout() -> NextTimeout {
+        NextTimeout {
+            after: Duration::from_secs(2),
+            reason: Timeout::Connect,
+        }
+    }
 
     #[test]
     fn readiness_stream_is_a_clone_of_the_transport_socket() {
@@ -360,5 +392,53 @@ mod tests {
         let (server, peer) = listener.accept().unwrap();
         assert_eq!(peer.ip(), "127.0.0.1".parse::<std::net::IpAddr>().unwrap());
         drop((client, server));
+    }
+
+    #[test]
+    fn local_ip_skips_resolved_addresses_from_another_family() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let listener_addr = listener.local_addr().unwrap();
+        let mut addrs = ResolvedSocketAddrs::from_fn(|_| listener_addr);
+        addrs.push(SocketAddr::new(
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+            listener_addr.port(),
+        ));
+        addrs.push(listener_addr);
+
+        let start = Instant::now();
+        let client = try_connect(
+            &addrs,
+            start,
+            connect_timeout(),
+            Arc::new(Instant::now),
+            &Config::default(),
+            Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        )
+        .unwrap();
+        let (server, peer) = listener.accept().unwrap();
+
+        assert_eq!(client.peer_addr().unwrap(), listener_addr);
+        assert_eq!(peer.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        drop((client, server));
+    }
+
+    #[test]
+    fn local_ip_errors_when_no_resolved_address_matches_its_family() {
+        let mut addrs = ResolvedSocketAddrs::from_fn(|_| "[::1]:1".parse().unwrap());
+        addrs.push("[::1]:1".parse().unwrap());
+
+        let error = try_connect(
+            &addrs,
+            Instant::now(),
+            connect_timeout(),
+            Arc::new(Instant::now),
+            &Config::default(),
+            Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(error, Error::Io(error) if error.kind() == std::io::ErrorKind::AddrNotAvailable)
+        );
     }
 }
