@@ -254,6 +254,7 @@ impl Transport for RustlsTransport {
 
         let output = &self.buffers.output()[..amount];
         self.stream.write_all(output)?;
+        self.stream.flush()?;
 
         Ok(())
     }
@@ -343,5 +344,140 @@ impl fmt::Debug for RustlsTransport {
         f.debug_struct("RustlsTransport")
             .field("chained", &self.stream.sock.inner())
             .finish()
+    }
+}
+
+#[cfg(all(test, feature = "_ring"))]
+mod tests {
+    use std::io;
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread;
+
+    use rustls::{ServerConfig, ServerConnection};
+    use rustls_pki_types::pem::PemObject;
+
+    use crate::Timeout;
+    use crate::transport::time::Duration;
+
+    use super::*;
+
+    const FAILURE_MARKER: &str = "injected TLS transport failure";
+
+    #[derive(Debug)]
+    struct FaultTransport {
+        stream: TcpStream,
+        buffers: LazyBuffers,
+        fail_writes: Arc<AtomicBool>,
+    }
+
+    impl Transport for FaultTransport {
+        fn buffers(&mut self) -> &mut dyn Buffers {
+            &mut self.buffers
+        }
+
+        fn transmit_output(&mut self, amount: usize, _timeout: NextTimeout) -> Result<(), Error> {
+            if self.fail_writes.load(Ordering::SeqCst) {
+                return Err(Error::Io(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    FAILURE_MARKER,
+                )));
+            }
+            self.stream.write_all(&self.buffers.output()[..amount])?;
+            Ok(())
+        }
+
+        fn await_input(&mut self, _timeout: NextTimeout) -> Result<bool, Error> {
+            let input = self.buffers.input_append_buf();
+            let amount = self.stream.read(input)?;
+            self.buffers.input_appended(amount);
+            Ok(amount > 0)
+        }
+
+        fn is_open(&mut self) -> bool {
+            true
+        }
+
+        fn try_clone_tcp_stream(&self) -> io::Result<Option<TcpStream>> {
+            self.stream.try_clone().map(Some)
+        }
+    }
+
+    #[test]
+    fn transmit_output_surfaces_deferred_socket_write_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let server_addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            let cert = CertificateDer::from_pem_slice(include_bytes!(
+                "../unversioned/transport/testdata/cert.pem"
+            ))
+            .unwrap();
+            let key = PrivateSec1KeyDer::from_pem_slice(include_bytes!(
+                "../unversioned/transport/testdata/key.pem"
+            ))
+            .unwrap();
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
+            let config = ServerConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(vec![cert], PrivateKeyDer::Sec1(key))
+                .unwrap();
+            let connection = ServerConnection::new(Arc::new(config)).unwrap();
+            let mut stream = StreamOwned::new(connection, socket);
+            let mut input = [0_u8; 1];
+            let _ = stream.read(&mut input);
+        });
+
+        let socket = TcpStream::connect(server_addr).unwrap();
+        socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        socket
+            .set_write_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let fail_writes = Arc::new(AtomicBool::new(false));
+        let fault = FaultTransport {
+            stream: socket,
+            buffers: LazyBuffers::new(1024, 1024),
+            fail_writes: fail_writes.clone(),
+        };
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(DisabledVerifier))
+            .with_no_client_auth();
+        let connection = ClientConnection::new(
+            Arc::new(config),
+            ServerName::try_from("example.com").unwrap(),
+        )
+        .unwrap();
+        let timeout = NextTimeout {
+            after: Duration::from_secs(2),
+            reason: Timeout::SendBody,
+        };
+        let mut adapter = TransportAdapter::new(fault.boxed());
+        adapter.set_timeout(timeout);
+        let stream = StreamOwned::new(connection, adapter);
+        let mut transport = RustlsTransport {
+            buffers: LazyBuffers::new(1024, 1024),
+            stream,
+        };
+
+        transport.stream.flush().unwrap();
+        fail_writes.store(true, Ordering::SeqCst);
+        let payload = b"must report a failed TLS record write";
+        transport.buffers.output()[..payload.len()].copy_from_slice(payload);
+        let error = transport
+            .transmit_output(payload.len(), timeout)
+            .unwrap_err();
+
+        assert!(matches!(&error, Error::Io(error) if error.kind() == io::ErrorKind::BrokenPipe));
+        assert!(error.to_string().contains(FAILURE_MARKER));
+        drop(transport);
+        server.join().unwrap();
     }
 }

@@ -92,6 +92,8 @@ impl<T: Transport> io::Write for TransportAdapter<T> {
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        // Transport::transmit_output() flushes every write before returning, so
+        // the adapter itself never retains pending output.
         Ok(())
     }
 }

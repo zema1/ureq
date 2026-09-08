@@ -251,7 +251,7 @@ impl Transport for NativeTlsTransport {
         stream.get_mut().get_mut().set_timeout(timeout);
 
         let output = &self.buffers.output()[..amount];
-        let ret = stream.write_all(output);
+        let ret = stream.write_all(output).and_then(|_| stream.flush());
 
         // Surface errors capture below NativeTls primarily.
         stream.get_mut().take_captured()?;
@@ -301,13 +301,11 @@ impl Transport for NativeTlsTransport {
     }
 
     fn try_clone_tcp_stream(&self) -> io::Result<Option<std::net::TcpStream>> {
-        match &self.stream {
-            LazyStream::Unstarted(Some((_, _, adapter))) => {
-                adapter.stream.get_ref().try_clone_tcp_stream()
-            }
-            LazyStream::Started(stream) => stream.get_ref().stream.get_ref().try_clone_tcp_stream(),
-            LazyStream::Unstarted(None) => Ok(None),
-        }
+        self.stream
+            .get_ref()
+            .stream
+            .get_ref()
+            .try_clone_tcp_stream()
     }
 }
 
