@@ -567,8 +567,7 @@ impl NoProxy {
                         .map(str::trim)
                         // bypass <local>, which tells windows to bypass intranet addresses
                         .filter(|&s| s != "<local>")
-                        .map(NoProxyEntry::try_parse)
-                        .flatten()
+                        .filter_map(NoProxyEntry::try_parse)
                         .collect(),
                 })
         }

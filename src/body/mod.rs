@@ -74,7 +74,7 @@ const JSON_BUFFER_DIVISOR: u64 = 3;
 ///
 /// # Pool reuse
 ///
-/// To return a connection (aka [`Transport`][crate::unversioned::transport::Transport])
+/// To return a connection (aka [`Transport`])
 /// to the Agent's pool, the body must be read to end. If [`BodyWithConfig::limit()`] is set
 /// shorter size than the actual response body, the connection will not be reused.
 ///
@@ -469,8 +469,7 @@ impl Body {
         }
     }
 
-    /// Extract the upgraded connection as an [`io::Read`](std::io::Read) and
-    /// [`io::Write`](std::io::Write) adapter.
+    /// Extract the upgraded connection as an [`io::Read`] and [`io::Write`] adapter.
     ///
     /// This is a convenience wrapper around [`Body::into_transport`]. The returned
     /// adapter also allows callers to clone the underlying TCP stream for readiness
